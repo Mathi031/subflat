@@ -1,0 +1,24 @@
+# Binaries
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Tests
+*.test
+*.out
+coverage.*
+
+# Local videos and outputs
+*.mkv
+*.mkv.part
+*.srt
+/tv/
+
+# Local environment
+go.work
+go.work.sum
+.env
+.DS_Store
