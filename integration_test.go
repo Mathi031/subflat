@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -241,9 +242,12 @@ func TestBurnIntegration(t *testing.T) {
 		}
 		return string(out)
 	}
+	// As long as sample.ass, as in a real episode: without the statistics tags
+	// (older mkvmerge), frameCount estimates from the container duration, which
+	// a longer subtitle track would stretch.
 	video := filepath.Join(dir, "video.mkv")
-	run(tl.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24000/1001:d=3",
-		"-f", "lavfi", "-i", "sine=d=3", "-c:v", "ffv1", "-c:a", "flac", video)
+	run(tl.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24000/1001:d=8",
+		"-f", "lavfi", "-i", "sine=d=8", "-c:v", "ffv1", "-c:a", "flac", video)
 	chapters := filepath.Join(dir, "chapters.txt")
 	if err := os.WriteFile(chapters, []byte("CHAPTER01=00:00:00.000\nCHAPTER01NAME=Inicio\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -256,13 +260,20 @@ func TestBurnIntegration(t *testing.T) {
 	before := hash(t, src)
 	ctx := context.Background()
 
-	// The progress of burnFile counts frames from the JSON of mkvmerge -J.
+	// The progress of burnFile counts frames from the JSON of mkvmerge -J: exact
+	// with the statistics tags, within one frame from the duration.
 	in, err := tl.identify(ctx, src)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := frameCount(in, in.Tracks[0]); n != 72 {
-		t.Errorf("frameCount = %d, want 72", n)
+	total, _ := strconv.ParseInt(strings.TrimSpace(run(ffprobe, "-v", "error", "-select_streams", "v:0",
+		"-count_frames", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", src)), 10, 64)
+	noTags := in.Tracks[0]
+	noTags.Properties.Frames = ""
+	for _, v := range []track{in.Tracks[0], noTags} {
+		if n := frameCount(in, v); total == 0 || n < total-1 || n > total {
+			t.Errorf("frameCount = %d with tags %q, the video has %d frames", n, v.Properties.Frames, total)
+		}
 	}
 
 	out := filepath.Join(dir, "tv")
@@ -334,7 +345,7 @@ func TestBurnIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got []int
-		_, err := tl.burn(ctx, work, src, "1.ass", filepath.Join(work, "v.mkv"), "x265", 30, 72, func(p int) { got = append(got, p) })
+		_, err := tl.burn(ctx, work, src, "1.ass", filepath.Join(work, "v.mkv"), "x265", 30, total, func(p int) { got = append(got, p) })
 		if err != nil {
 			t.Fatal(err)
 		}
