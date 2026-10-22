@@ -3,7 +3,8 @@
 [English](README.md) | Español
 
 Aplana los subtítulos ASS/SSA de los MKV a SRT que cualquier TV muestra, incluidos
-los reproductores de Samsung (Tizen) que dibujan un solo subtítulo a la vez.
+los reproductores de Samsung (Tizen) que dibujan un solo subtítulo a la vez. O,
+con `--burn`, los dibuja sobre el vídeo tal como los muestra VLC.
 
 ## El problema
 
@@ -37,6 +38,17 @@ winget install MoritzBunkus.MKVToolNix   # Windows
 
 ```sh
 brew install mkvtoolnix                  # macOS
+```
+
+Para `--burn` hace falta además [ffmpeg](https://ffmpeg.org/) compilado con
+libass, en el PATH. Estas versiones lo traen:
+
+```powershell
+winget install Gyan.FFmpeg               # Windows (o bien: choco install ffmpeg)
+```
+
+```sh
+brew install ffmpeg                      # macOS
 ```
 
 ### Binarios
@@ -90,6 +102,10 @@ subflat <carpeta | archivo.mkv> [opciones]
 | `--dry-run` | Muestra pistas, estilos con su conteo y lo que escribiría, sin escribir nada. |
 | `--force` | Sobrescribe las salidas que ya existen. Sin él se saltan. |
 | `--jobs N` | Archivos en paralelo, 1 por defecto. Usa 2 o 3 solo si la salida va a un SSD: en un disco mecánico o un USB, varias escrituras grandes a la vez se estorban. |
+| `--burn` | Dibuja una pista ASS sobre el vídeo en vez de convertir a SRT. Ver [Quemar los subtítulos](#quemar-los-subtítulos). No se combina con `--srt-only`, `--keep-ass`, `--exclude-style`, `--min-gap` ni `--lines`. |
+| `--burn-lang IDIOMA` | Con `--burn`, la pista a quemar cuando hay varias: `spa`, `es` (acepta también `es-419`), `eng`... Sin él, `subflat` pregunta. |
+| `--encoder NOMBRE` | Con `--burn`: `auto` (por defecto), `qsv` (Intel Quick Sync) o `x265` (CPU). |
+| `--quality N` | Con `--burn`, de 1 a 51, 18 por defecto. Menor es mejor y más pesado. |
 | `--lang en\|es` | Idioma de los mensajes. Ver más abajo. |
 | `--version` | Muestra la versión. |
 
@@ -141,7 +157,8 @@ plano.
 
 Los MKV sin pistas ASS se saltan. Un error en un archivo no detiene el lote.
 Código de salida: 0 si todo fue bien, 1 si algún archivo falló o se interrumpió
-la ejecución, 2 por un error de uso o por falta de MKVToolNix.
+la ejecución, 2 por un error de uso o por falta de una herramienta (MKVToolNix,
+o ffmpeg con `--burn`).
 
 ## Ejemplos
 
@@ -173,6 +190,12 @@ Un solo episodio:
 
 ```sh
 subflat episodio.mkv
+```
+
+Quemar la pista en español en toda la temporada, directo al USB del TV:
+
+```powershell
+subflat "D:\Anime\Temporada 1" --burn --burn-lang spa --out "E:\Temporada 1"
 ```
 
 ## Cómo fusiona
@@ -256,6 +279,49 @@ El remux se escribe primero como `<destino>.part` y se renombra al terminar, as�
 que una ejecución cortada no deja un archivo a medias que la siguiente daría por
 hecho. Los temporales se borran siempre, también con error o Ctrl+C.
 
+## Quemar los subtítulos
+
+El texto SRT no admite posiciones, cuadros ni animación, y el reproductor de
+Samsung ignora los subtítulos de imagen (PGS). La única forma de ver en el TV lo
+que muestra VLC (carteles en su sitio, cuadros, karaoke que se mueve) es
+dibujarlos sobre los fotogramas. Eso hace `--burn`:
+
+1. Elige una pista ASS. Si hay una sola, esa. Si hay varias, `--burn-lang` elige
+   por idioma; sin él, `subflat` las lista y pide un número. La respuesta se
+   reutiliza en los siguientes archivos del lote mientras coincida con una sola
+   pista por idioma y nombre, así que una temporada pregunta una vez. Sin una
+   terminal en la que preguntar, un archivo con varias pistas se salta.
+2. Extrae esa pista y los adjuntos (las fuentes) a una carpeta temporal, y ffmpeg
+   la dibuja con libass, el mismo motor que usa VLC, sobre cada fotograma.
+3. El vídeo se recodifica a HEVC 10 bit; los fps, el número de fotogramas y las
+   marcas de tiempo quedan como en el original. El audio se copia sin recodificar.
+4. `mkvmerge` junta el vídeo nuevo con el audio, los capítulos y las etiquetas del
+   original. La salida no lleva pistas de subtítulos (el TV podría activar una
+   encima de la imagen) ni adjuntos.
+
+El codificador: `auto` usa Intel Quick Sync (`qsv`) si codifica un fotograma de
+prueba y, si no, x265 en la CPU (y falla si ninguno funciona). Dos episodios de
+24 minutos en 1080p, quemados con `qsv` y la calidad por defecto en un i7-1260P
+con su gráfica integrada. VMAF compara escenas de 30 s contra el original con los
+subtítulos dibujados y sin comprimir (100 es idéntico; por encima de 95 la
+diferencia apenas se ve):
+
+| Original | Quemado | Tiempo | VMAF |
+|---|---|---|---|
+| HEVC 10 bit, vídeo 6,4 Mbit/s, opening con karaoke, 1,20 GB | vídeo 2,6 Mbit/s, 499 MB | 6 min 55 s | 96,7 a 97,8 |
+| H.264, vídeo 3,1 Mbit/s, 196 fuentes adjuntas, 1,09 GB | vídeo 2,0 Mbit/s, 405 MB | 7 min 34 s | 96,1 a 97,3 |
+
+Los dos conservaron todos los fotogramas (34.167 y 34.047) y todo el audio. x265
+dio el mismo tamaño y la misma calidad (VMAF 98,4 frente a 97,8 en la escena de
+karaoke) unas 13 veces más lento: cerca de 2 horas por episodio en esa CPU.
+
+La calidad fija un aspecto, no un tamaño: las escenas tranquilas gastan pocos
+bits y las movidas pueden gastar más que el original (10,2 Mbit/s frente a 3,5 en
+una escena con mucho movimiento), así que el tamaño depende del episodio. La
+salida descarta los adjuntos, que en algunos lanzamientos son cientos de MB de
+fuentes. El vídeo codificado pasa por la carpeta temporal antes del remux final,
+que necesita allí un espacio libre parecido al tamaño de la salida.
+
 ## Desarrollo
 
 ```sh
@@ -263,9 +329,11 @@ go vet ./...
 go test ./...
 ```
 
-El test de integración crea un MKV con `mkvmerge` y comprueba el resultado. Se
-salta si MKVToolNix no está instalado. La CI corre lo mismo en cada push y pull
-request; empujar un tag `v*` compila los binarios y publica un release.
+Los tests de integración crean un MKV con `mkvmerge` y comprueban el resultado.
+Se saltan si MKVToolNix no está instalado, y el de `--burn` también sin ffmpeg y
+ffprobe; codifica con x265, así que no necesita un hardware concreto. La CI corre
+lo mismo en cada push y pull request; empujar un tag `v*` compila los binarios y
+publica un release.
 
 ## Limitaciones
 
@@ -273,7 +341,7 @@ request; empujar un tag `v*` compila los binarios y publica un release.
   posiciones exactas. Un cartel va arriba o abajo según la mitad de la imagen en
   que está colocado, sube por el relleno de `--lines`, no hasta su posición
   real, y siempre centrado. Si los carteles molestan, se quitan con
-  `--exclude-style`.
+  `--exclude-style`, o se queman con `--burn`.
 - El karaoke generado cuyas líneas originales no están en el archivo queda sin
   letra: rehacerla desde las letras obligaría a adivinar los espacios.
 - No se usa `{\an8}` ni otra marca de posición: no son parte del estándar SRT y
@@ -283,9 +351,16 @@ request; empujar un tag `v*` compila los binarios y publica un release.
   calibrado para el de Samsung con subtítulos «Pequeño»; con otro tamaño o en
   otro reproductor puede quedar más alto o más bajo.
 - Solo convierte pistas ASS/SSA. Los subtítulos de imagen (PGS, VobSub) y las
-  SRT que ya trae el MKV se copian tal cual.
-- No recodifica: si el TV no soporta el vídeo o el audio del archivo, `subflat`
-  no lo arregla.
+  SRT que ya trae el MKV se copian tal cual. `--burn` también quema solo pistas
+  ASS/SSA.
+- `--burn` recodifica: siempre hay algo de pérdida, invisible con la calidad por
+  defecto, y lleva tiempo (Quick Sync, unos 7 minutos por episodio; x265 en la
+  CPU, horas por episodio). Solo se usa Intel Quick Sync como codificador por
+  hardware: NVIDIA, AMD y Apple (VideoToolbox) aún no se han medido, así que en un
+  Mac `auto` recurre a x265. Comprobado solo con originales SDR (BT.709).
+- Sin `--burn` no recodifica: si el TV no soporta el vídeo o el audio del
+  archivo, `subflat` no lo arregla. Con él, el vídeo sale en HEVC 10 bit, que el
+  TV tiene que soportar; el audio se sigue copiando tal cual.
 - Comprobado con el reproductor nativo de un Samsung QN65Q65D (firmware
   T-NKLDUABC-0090-2123.9), desde USB: muestra todas las líneas del subtítulo
   fusionado, y con el relleno el cartel arriba y el diálogo abajo. Otros modelos
@@ -294,8 +369,8 @@ request; empujar un tag `v*` compila los binarios y publica un release.
 ## Contribuir
 
 Los issues y pull requests son bienvenidos. Antes de abrir un PR, pasa
-`go vet ./...` y `go test ./...` con MKVToolNix instalado para que corra también
-el test de integración. Los commits siguen
+`go vet ./...` y `go test ./...` con MKVToolNix y ffmpeg instalados para que
+corran también los tests de integración. Los commits siguen
 [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Licencia

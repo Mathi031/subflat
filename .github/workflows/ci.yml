@@ -13,8 +13,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # mkvmerge and mkvextract: without them the integration test is skipped.
-      - run: sudo apt-get update && sudo apt-get install -y mkvtoolnix
+      # MKVToolNix, and ffmpeg (with libass and x265) for --burn: without them the
+      # integration tests are skipped.
+      - run: sudo apt-get update && sudo apt-get install -y mkvtoolnix ffmpeg
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...

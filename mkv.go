@@ -15,7 +15,26 @@ import (
 	"strings"
 )
 
-type tools struct{ mkvmerge, mkvextract string }
+// ffmpeg is only looked for with --burn.
+type tools struct{ mkvmerge, mkvextract, ffmpeg string }
+
+// mkvInfo is what mkvmerge -J says about a file.
+type mkvInfo struct {
+	Container struct {
+		Recognized bool `json:"recognized"`
+		Properties struct {
+			Duration int64 `json:"duration"` // nanoseconds
+		} `json:"properties"`
+	} `json:"container"`
+	Errors      []string     `json:"errors"`
+	Tracks      []track      `json:"tracks"`
+	Attachments []attachment `json:"attachments"`
+}
+
+type attachment struct {
+	ID       int    `json:"id"`
+	FileName string `json:"file_name"`
+}
 
 type track struct {
 	ID         int    `json:"id"`
@@ -27,6 +46,8 @@ type track struct {
 		Name         string `json:"track_name"`
 		Default      bool   `json:"default_track"`
 		Forced       bool   `json:"forced_track"`
+		FrameDur     int64  `json:"default_duration"`     // nanoseconds; 0 when unknown
+		Frames       string `json:"tag_number_of_frames"` // mkvmerge's statistics tags
 		// Only present when the file sets them.
 		HearingImpaired  *bool `json:"flag_hearing_impaired"`
 		VisualImpaired   *bool `json:"flag_visual_impaired"`
@@ -81,7 +102,7 @@ func findTools() (tools, error) {
 		}
 		return ""
 	}
-	t := tools{find("mkvmerge"), find("mkvextract")}
+	t := tools{mkvmerge: find("mkvmerge"), mkvextract: find("mkvextract")}
 	if t.mkvmerge == "" || t.mkvextract == "" {
 		install := "brew install mkvtoolnix"
 		if runtime.GOOS == "windows" {
@@ -92,35 +113,41 @@ func findTools() (tools, error) {
 	return t, nil
 }
 
-func (t tools) identify(ctx context.Context, path string) ([]track, error) {
+func (t tools) identify(ctx context.Context, path string) (mkvInfo, error) {
 	out, runErr := exec.CommandContext(ctx, t.mkvmerge, "-J", path).Output()
-	var info struct {
-		Container struct{ Recognized bool } `json:"container"`
-		Errors    []string                  `json:"errors"`
-		Tracks    []track                   `json:"tracks"`
-	}
+	var info mkvInfo
 	// The JSON carries the reason even when mkvmerge exits with an error.
 	if err := json.Unmarshal(out, &info); err != nil {
-		return nil, fmt.Errorf("mkvmerge -J: %w", cmp.Or(runErr, err))
+		return info, fmt.Errorf("mkvmerge -J: %w", cmp.Or(runErr, err))
 	}
 	if len(info.Errors) > 0 {
-		return nil, errors.New(strings.Join(info.Errors, "; "))
+		return info, errors.New(strings.Join(info.Errors, "; "))
 	}
 	if runErr != nil {
-		return nil, fmt.Errorf("mkvmerge -J: %w", runErr)
+		return info, fmt.Errorf("mkvmerge -J: %w", runErr)
 	}
 	if !info.Container.Recognized {
-		return nil, errors.New(m.unknownFormat)
+		return info, errors.New(m.unknownFormat)
 	}
-	return info.Tracks, nil
+	return info, nil
 }
 
-// extract writes each track to <dir>/<id>.ass. It runs inside dir with relative
-// names so the "id:file" spec never meets the colon of a Windows drive.
-func (t tools) extract(ctx context.Context, src, dir string, ids []int) ([]string, error) {
+// extract writes each track to <dir>/<id>.ass and each attachment to
+// <dir>/fonts/<id><ext>. It runs inside dir with relative names so the "id:file"
+// spec never meets the colon of a Windows drive.
+func (t tools) extract(ctx context.Context, src, dir string, ids []int, atts []attachment) ([]string, error) {
 	args := []string{src, "tracks", "-q"}
 	for _, id := range ids {
 		args = append(args, fmt.Sprintf("%d:%d.ass", id, id))
+	}
+	if len(atts) > 0 {
+		if err := os.Mkdir(filepath.Join(dir, "fonts"), 0o755); err != nil {
+			return nil, err
+		}
+		args = append(args, "attachments")
+		for _, a := range atts {
+			args = append(args, fmt.Sprintf("%d:fonts/%d%s", a.ID, a.ID, filepath.Ext(a.FileName)))
+		}
 	}
 	cmd := exec.CommandContext(ctx, t.mkvextract, args...)
 	cmd.Dir = dir
@@ -169,6 +196,18 @@ func (t tools) remux(ctx context.Context, src, dst string, tracks []track, srts 
 	}
 	args = append(args, src)
 	return runTool(exec.CommandContext(ctx, t.mkvmerge, append(args, inputs...)...), progress)
+}
+
+// muxBurned writes dst with the video of burned, in the language of the original
+// video track v, and the audio, chapters and tags of src. The subtitles are in the
+// picture now, and the attachments were their fonts.
+func (t tools) muxBurned(ctx context.Context, burned, src, dst string, v track, progress func(int)) ([]string, error) {
+	args := []string{"-q", "-o", dst, "--language", "0:" + v.lang(), burned,
+		"--no-video", "--no-subtitles", "--no-attachments", src}
+	if progress != nil {
+		args[0] = "--gui-mode"
+	}
+	return runTool(exec.CommandContext(ctx, t.mkvmerge, args...), progress)
 }
 
 func yesNo(b bool) string {

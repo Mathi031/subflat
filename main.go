@@ -1,5 +1,6 @@
 // subflat converts the ASS/SSA tracks of MKV files to SRT, merging simultaneous
-// events, so TVs that only show one subtitle at a time show every line.
+// events, so TVs that only show one subtitle at a time show every line. With
+// --burn it draws one ASS track onto the video instead, as VLC shows it.
 package main
 
 import (
@@ -23,10 +24,12 @@ import (
 )
 
 type config struct {
-	dir, file, out                             string // file is set when the target is a single MKV
-	recursive, keepASS, srtOnly, dryRun, force bool
-	exclude                                    *regexp.Regexp
-	minGap, jobs, lines                        int
+	dir, file, out                                   string // file is set when the target is a single MKV
+	recursive, keepASS, srtOnly, dryRun, force, burn bool
+	exclude                                          *regexp.Regexp
+	minGap, jobs, lines, quality                     int
+	burnLang, encoder                                string
+	pick                                             *picker // set by run with --burn
 }
 
 var errVersion = errors.New("version")
@@ -46,6 +49,10 @@ func newFlags(c *config, exclude, lang *string, version *bool) *flag.FlagSet {
 	f.BoolVar(&c.dryRun, "dry-run", false, "")
 	f.BoolVar(&c.force, "force", false, "")
 	f.IntVar(&c.jobs, "jobs", 1, "")
+	f.BoolVar(&c.burn, "burn", false, "")
+	f.StringVar(&c.burnLang, "burn-lang", "", "")
+	f.StringVar(&c.encoder, "encoder", "auto", "")
+	f.IntVar(&c.quality, "quality", 18, "")
 	f.StringVar(lang, "lang", "", "")
 	f.BoolVar(version, "version", false, "")
 	return f
@@ -88,6 +95,24 @@ func parseArgs(args []string) (config, error) {
 		return c, errors.New(m.errMinGap)
 	case c.lines < 0:
 		return c, errors.New(m.errLines)
+	case c.encoder != "auto" && c.encoder != "qsv" && c.encoder != "x265":
+		return c, fmt.Errorf(m.errEncoder, c.encoder)
+	case c.quality < 1 || c.quality > 51:
+		return c, errors.New(m.errQuality)
+	}
+	// Only the options given count: their defaults never clash.
+	var clash error
+	flags.Visit(func(f *flag.Flag) {
+		switch {
+		case clash != nil:
+		case c.burn && slices.Contains([]string{"srt-only", "keep-ass", "exclude-style", "min-gap", "lines"}, f.Name):
+			clash = fmt.Errorf(m.errNotBurn, f.Name)
+		case !c.burn && slices.Contains([]string{"burn-lang", "encoder", "quality"}, f.Name):
+			clash = fmt.Errorf(m.errBurnOnly, f.Name)
+		}
+	})
+	if clash != nil {
+		return c, clash
 	}
 	// Absolute paths: mkvextract runs inside the temp dir, and mkvmerge reads a
 	// relative name starting with @ as an options file.
@@ -154,7 +179,17 @@ func run(args []string) int {
 	case err != nil:
 		return usageError(err)
 	}
+	// Ctrl+C cancels ctx: running tools are killed and the deferred cleanups run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	t, err := findTools()
+	if err == nil && c.burn {
+		t.ffmpeg, err = findFFmpeg()
+	}
+	if err == nil && c.burn {
+		c.encoder, err = pickEncoder(ctx, t.ffmpeg, c.encoder)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s %v\n", paint(red, "error:"), err)
 		return 2
@@ -164,6 +199,14 @@ func run(args []string) int {
 		return usageError(err)
 	}
 	fmt.Printf("%s %s\n%s  ->  %s\n", paint(bold, "subflat"), version(), cmp.Or(c.file, c.dir), c.out)
+	if c.burn {
+		c.pick = &picker{lang: c.burnLang}
+		// The question goes to stdout: only when both ends are the terminal.
+		if tty && stdinTTY {
+			c.pick.ask = func(cands []track) (track, bool) { return askTrack(ctx, stdinLines(), cands) }
+		}
+		fmt.Printf(m.burnWith+"\n", c.encoder, c.quality)
+	}
 	if c.dryRun {
 		fmt.Println(paint(yellow, m.dryRun))
 	}
@@ -172,10 +215,6 @@ func run(args []string) int {
 		return 0
 	}
 	start := time.Now()
-
-	// Ctrl+C cancels ctx: running mkvmerge is killed and the deferred cleanups run.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	type job struct {
 		i int
@@ -351,16 +390,19 @@ func process(ctx context.Context, t tools, c config, src string) (r result) {
 		return fail(errors.New(m.sameAsSrc))
 	}
 
-	tracks, err := t.identify(ctx, src)
+	info, err := t.identify(ctx, src)
 	if err != nil {
 		return fail(err)
 	}
+	tracks := info.Tracks
 	var ass []track
 	for _, tr := range tracks {
 		note := ""
 		if tr.isASS() {
 			ass = append(ass, tr)
-			note = "  " + m.toSRT
+			if !c.burn {
+				note = "  " + m.toSRT
+			}
 		}
 		r.logf("%s %d  %-9s %-16s %s%s%s", m.track, tr.ID, tr.Type, tr.Properties.CodecID, tr.lang(), describe(tr), note)
 	}
@@ -389,6 +431,9 @@ func process(ctx context.Context, t tools, c config, src string) (r result) {
 		return fail(err)
 	}
 	defer os.RemoveAll(tmp)
+	if c.burn {
+		return burnFile(ctx, t, c, src, dst, tmp, info, ass, &r, live)
+	}
 
 	var ids []int
 	for _, tr := range ass {
@@ -397,7 +442,7 @@ func process(ctx context.Context, t tools, c config, src string) (r result) {
 	if live {
 		show("      " + m.extracting)
 	}
-	warns, err := t.extract(ctx, src, tmp, ids)
+	warns, err := t.extract(ctx, src, tmp, ids, nil)
 	if err != nil {
 		return fail(err)
 	}
@@ -464,28 +509,35 @@ func process(ctx context.Context, t tools, c config, src string) (r result) {
 		return r.end(done, "%s", written)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fail(err)
-	}
-	// Write to .part and rename at the end: an interrupted remux never leaves a
-	// destination that the next run would skip as already done.
-	part := dst + ".part"
-	defer os.Remove(part)
 	var progress func(int)
 	if live {
 		progress = func(p int) { show(fmt.Sprintf("      "+m.remuxing, p)) }
 	}
-	warns, err = t.remux(ctx, src, part, tracks, srts, c.keepASS, progress)
-	if err != nil {
+	if err := writePart(&r, dst, func(part string) ([]string, error) {
+		return t.remux(ctx, src, part, tracks, srts, c.keepASS, progress)
+	}); err != nil {
 		return fail(err)
+	}
+	return r.end(done, "%s", written)
+}
+
+// writePart runs mux into dst + ".part" and renames it at the end: an
+// interrupted run never leaves a destination that the next one would skip as
+// already done. The warnings of mux go to r.
+func writePart(r *result, dst string, mux func(part string) ([]string, error)) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	part := dst + ".part"
+	defer os.Remove(part)
+	warns, err := mux(part)
+	if err != nil {
+		return err
 	}
 	for _, w := range warns {
 		r.warn(w)
 	}
-	if err := os.Rename(part, dst); err != nil {
-		return fail(err)
-	}
-	return r.end(done, "%s", written)
+	return os.Rename(part, dst)
 }
 
 func describe(tr track) string {

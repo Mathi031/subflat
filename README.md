@@ -3,7 +3,8 @@
 English | [Español](README.es.md)
 
 Flattens the ASS/SSA subtitles of MKV files into SRT that any TV can show,
-including the Samsung (Tizen) players that draw one subtitle at a time.
+including the Samsung (Tizen) players that draw one subtitle at a time. Or, with
+`--burn`, draws them onto the video exactly as VLC shows them.
 
 ## The problem
 
@@ -37,6 +38,17 @@ winget install MoritzBunkus.MKVToolNix   # Windows
 
 ```sh
 brew install mkvtoolnix                  # macOS
+```
+
+For `--burn` you also need [ffmpeg](https://ffmpeg.org/) built with libass, on
+the PATH. These builds have it:
+
+```powershell
+winget install Gyan.FFmpeg               # Windows (or: choco install ffmpeg)
+```
+
+```sh
+brew install ffmpeg                      # macOS
 ```
 
 ### Binaries
@@ -90,6 +102,10 @@ subflat <folder | file.mkv> [options]
 | `--dry-run` | Lists tracks, styles with their counts and what would be written, without writing anything. |
 | `--force` | Overwrites outputs that already exist. Without it they are skipped. |
 | `--jobs N` | Files in parallel, 1 by default. Use 2 or 3 only when the output goes to an SSD: on a hard disk or a USB stick, several big writes at once slow each other down. |
+| `--burn` | Draws one ASS track onto the video instead of converting to SRT. See [Burning the subtitles](#burning-the-subtitles). Cannot be combined with `--srt-only`, `--keep-ass`, `--exclude-style`, `--min-gap` or `--lines`. |
+| `--burn-lang LANG` | With `--burn`, the track to burn when there are several: `spa`, `es` (also takes `es-419`), `eng`... Without it, `subflat` asks. |
+| `--encoder NAME` | With `--burn`: `auto` (default), `qsv` (Intel Quick Sync) or `x265` (CPU). |
+| `--quality N` | With `--burn`, from 1 to 51, 18 by default. Lower is better and larger. |
 | `--lang en\|es` | Language of the messages. See below. |
 | `--version` | Prints the version. |
 
@@ -140,7 +156,8 @@ and, with one job at a time, the remux shows its percentage live. Set
 
 MKV files without ASS tracks are skipped. An error in one file does not stop the
 batch. Exit code: 0 when everything went through, 1 if any file failed or the run
-was interrupted, 2 for a usage error or missing MKVToolNix.
+was interrupted, 2 for a usage error or a missing tool (MKVToolNix, or ffmpeg with
+`--burn`).
 
 ## Examples
 
@@ -172,6 +189,12 @@ One episode:
 
 ```sh
 subflat episode.mkv
+```
+
+Burn the Spanish track into the whole season, straight to the TV's USB stick:
+
+```powershell
+subflat "D:\Anime\Season 1" --burn --burn-lang spa --out "E:\Season 1"
 ```
 
 ## How it merges
@@ -253,6 +276,49 @@ shown. The remux is written as `<destination>.part` and renamed at the end, so a
 interrupted run never leaves a half file that the next run would take as done.
 Temporary files are always removed, also on error or Ctrl+C.
 
+## Burning the subtitles
+
+SRT text cannot carry positions, boxes or animation, and the Samsung player
+ignores image subtitles (PGS). The only way to see on the TV what VLC shows (signs
+where they belong, boxes, karaoke that moves) is to draw them onto the frames.
+That is `--burn`:
+
+1. It picks one ASS track. With a single one, that one. With several, `--burn-lang`
+   picks by language; without it, `subflat` lists them and asks for a number. The
+   answer is reused for the next files of the batch while it matches a single
+   track by language and name, so a season asks once. Without a terminal to ask
+   on, a file with several tracks is skipped.
+2. It extracts that track and the attachments (the fonts) to a temporary folder,
+   and ffmpeg draws it with libass, the same renderer VLC uses, onto every frame.
+3. The video is re-encoded to HEVC 10 bit; frame rate, frame count and
+   timestamps stay those of the original. The audio is copied without
+   re-encoding.
+4. `mkvmerge` puts together the new video with the audio, chapters and tags of
+   the original. The output has no subtitle tracks (the TV could turn one on over
+   the picture) and no attachments.
+
+The encoder: `auto` uses Intel Quick Sync (`qsv`) when it encodes a test frame,
+else x265 on the CPU (and fails if neither works). Two 24-minute 1080p episodes,
+burned with `qsv` at the default quality on an i7-1260P with its integrated GPU.
+VMAF compares 30 s scenes against the original with the subtitles drawn and not
+compressed (100 is identical; above 95 the difference is hard to see):
+
+| Original | Burned | Time | VMAF |
+|---|---|---|---|
+| HEVC 10 bit, video 6.4 Mbit/s, karaoke OP, 1.20 GB | video 2.6 Mbit/s, 499 MB | 6 min 55 s | 96.7 to 97.8 |
+| H.264, video 3.1 Mbit/s, 196 attached fonts, 1.09 GB | video 2.0 Mbit/s, 405 MB | 7 min 34 s | 96.1 to 97.3 |
+
+Both kept every frame (34,167 and 34,047) and every audio frame. x265 gave the
+same size and quality (VMAF 98.4 against 97.8 in the karaoke scene) about 13
+times slower: close to 2 hours per episode on that CPU.
+
+The quality setting targets a look, not a size: calm scenes take few bits and
+busy ones can take more than the original (10.2 Mbit/s against 3.5 in a scene
+full of motion), so the size depends on the episode. The output drops the
+attachments, which in some releases are hundreds of MB of fonts. The encoded
+video goes through the temporary folder before the final mux, which needs free
+space there about the size of the output.
+
 ## Development
 
 ```sh
@@ -260,9 +326,11 @@ go vet ./...
 go test ./...
 ```
 
-The integration test builds an MKV with `mkvmerge` and checks the result. It is
-skipped when MKVToolNix is not installed. CI runs the same on every push and pull
-request; pushing a `v*` tag builds the binaries and publishes a release.
+The integration tests build an MKV with `mkvmerge` and check the result. They are
+skipped when MKVToolNix is not installed, and the `--burn` one also without
+ffmpeg and ffprobe; it encodes with x265, so it needs no particular hardware. CI
+runs the same on every push and pull request; pushing a `v*` tag builds the
+binaries and publishes a release.
 
 ## Limitations
 
@@ -270,7 +338,7 @@ request; pushing a `v*` tag builds the binaries and publishes a release.
   are lost. A sign goes to the top or the bottom by the half of the picture it
   is placed in, rises through the `--lines` padding, not to its real position,
   and always centered. If signs get in the way, drop them with
-  `--exclude-style`.
+  `--exclude-style`, or burn them with `--burn`.
 - Generated karaoke whose original lines are not in the file shows no lyrics:
   rebuilding them from the letters would mean guessing the spaces.
 - No `{\an8}` or other position tag is used: they are not part of the SRT
@@ -280,9 +348,16 @@ request; pushing a `v*` tag builds the binaries and publishes a release.
   the Samsung one with subtitles set to "Small"; with another size or in another
   player it may land higher or lower.
 - Only ASS/SSA tracks are converted. Image subtitles (PGS, VobSub) and the SRT
-  tracks the MKV already has are copied as they are.
-- No re-encoding: if the TV does not support the file's video or audio, `subflat`
-  does not fix that.
+  tracks the MKV already has are copied as they are. `--burn` only burns ASS/SSA
+  tracks too.
+- `--burn` re-encodes: there is always some loss, invisible at the default
+  quality, and it takes time (Quick Sync, about 7 minutes per episode; x265 on the
+  CPU, hours per episode). Only Intel Quick Sync is used as hardware encoder:
+  NVIDIA, AMD and Apple (VideoToolbox) have not been measured yet, so on a Mac
+  `auto` falls back to x265. It was checked with SDR (BT.709) sources only.
+- Without `--burn` there is no re-encoding: if the TV does not support the file's
+  video or audio, `subflat` does not fix that. With it, the video comes out as
+  HEVC 10 bit, which the TV has to support; the audio is still copied as is.
 - Checked on the native player of a Samsung QN65Q65D (firmware
   T-NKLDUABC-0090-2123.9), from USB: it shows every line of the merged subtitle
   and, with the padding, the sign at the top and the dialogue at the bottom.
@@ -291,7 +366,8 @@ request; pushing a `v*` tag builds the binaries and publishes a release.
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR, run `go vet ./...`
-and `go test ./...` with MKVToolNix installed so the integration test runs too.
+and `go test ./...` with MKVToolNix and ffmpeg installed so the integration tests
+run too.
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## License

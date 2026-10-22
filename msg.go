@@ -7,14 +7,16 @@ type messages struct {
 	help string
 
 	// usage errors
-	errOneTarget, errJobs, errMinGap, errLines, errLang, usageHint string
+	errOneTarget, errJobs, errMinGap, errLines, errLang, errEncoder, errQuality, errNotBurn, errBurnOnly,
+	usageHint string
 
 	// before the batch
-	noTools, notFound, notTarget, unknownFormat, dryRun, mkvFiles string
+	noTools, noFFmpeg, noLibass, noEncoder, notFound, notTarget, unknownFormat, burnWith, dryRun, mkvFiles string
 
 	// per file
 	track, toSRT, sameAsSrc, noASS, exists, existsDry, events, styles, excluded,
 	karaoke, badLines, tallCue, emptyTrack, noDialogue, wouldWrite, extracting, remuxing,
+	noVideo, burnTrack, sameAsBefore, noLangMatch, manyASS, useBurnLang, noAnswer, askTrack, askNumber, burning,
 	warning, skipped, failed, internal string
 
 	// end of the batch
@@ -27,7 +29,8 @@ var en = messages{
 	help: `subflat %s - flatten ASS/SSA subtitles in MKV files into SRT any TV can show
 
 Converts every ASS/SSA track of each MKV to SRT, merging the events that overlap
-in time into one cue, and remuxes to a new MKV. The original is never modified.
+in time into one cue, and remuxes to a new MKV. With --burn, draws one ASS track
+onto the video instead, exactly as VLC shows it. The original is never modified.
 
 USAGE
   subflat <folder | file.mkv> [options]
@@ -46,6 +49,14 @@ SUBTITLES
   --lines N              height, in lines, of the cues with top text, padded with blank lines
                          so signs show near the top; 0 keeps everything at the bottom (default 17)
 
+BURN
+  --burn                 draw the ASS subtitles onto the video, with their positions, drawings
+                         and effects; re-encodes it to HEVC 10 bit, needs ffmpeg. The output
+                         keeps video, audio and chapters, and has no subtitle tracks
+  --burn-lang LANG       track to burn when there are several, e.g. spa or es; without it, asks
+  --encoder NAME         auto, qsv (Intel Quick Sync) or x265 (CPU, much slower) (default auto)
+  --quality N            1-51, lower is better and larger (default 18)
+
 GENERAL
   --dry-run              list tracks, styles and what would be written, write nothing
   --lang en|es           language of the messages (default: your system's, else en)
@@ -57,6 +68,7 @@ EXAMPLES
   subflat "D:\Anime\Season 1" --recursive --exclude-style "(?i)^(signs?|op|ed)"
   subflat ~/Videos/Show --out /Volumes/USB/Show --keep-ass
   subflat episode.mkv --srt-only
+  subflat "D:\Anime\Season 1" --burn --burn-lang spa --out "E:\TV\Season 1"
 
 Docs: https://github.com/Mathi031/subflat
 `,
@@ -65,12 +77,20 @@ Docs: https://github.com/Mathi031/subflat
 	errMinGap:    "--min-gap cannot be negative",
 	errLines:     "--lines cannot be negative",
 	errLang:      "--lang must be en or es, not %q",
+	errEncoder:   "--encoder must be auto, qsv or x265, not %q",
+	errQuality:   "--quality must be between 1 and 51",
+	errNotBurn:   "--%s does not apply with --burn",
+	errBurnOnly:  "--%s only works with --burn",
 	usageHint:    "Run 'subflat --help' for usage.",
 
 	noTools:       "mkvmerge and mkvextract (MKVToolNix) not found. Install it with:\n  %s\nor download it from https://mkvtoolnix.download/",
+	noFFmpeg:      "ffmpeg not found, --burn needs it. Install it with:\n  %s\nor download it from https://ffmpeg.org/download.html",
+	noLibass:      "this ffmpeg has no subtitles filter (built without libass): install a full build",
+	noEncoder:     "the %s encoder does not work on this computer: %s",
 	notFound:      "%s does not exist",
 	notTarget:     "%s is not a folder or an .mkv file",
 	unknownFormat: "mkvmerge does not recognize the format",
+	burnWith:      "burning with %s, quality %d",
 	dryRun:        "dry run: nothing will be written",
 	mkvFiles:      "MKV files",
 
@@ -91,10 +111,22 @@ Docs: https://github.com/Mathi031/subflat
 	wouldWrite: "would write %s",
 	extracting: "extracting subtitles",
 	remuxing:   "remuxing %d%%",
-	warning:    "warning:",
-	skipped:    "skipped",
-	failed:     "FAILED",
-	internal:   "internal error: %v",
+
+	noVideo:      "no video track",
+	burnTrack:    "burning track %d: %s%s%s",
+	sameAsBefore: "(same choice as before)",
+	noLangMatch:  "no ASS track in language %s",
+	manyASS:      "several ASS tracks and no terminal to ask which one",
+	useBurnLang:  ": use --burn-lang",
+	noAnswer:     "no track chosen",
+	askTrack:     "Several ASS tracks. Which one to burn?",
+	askNumber:    "Number: ",
+	burning:      "burning subtitles",
+
+	warning:  "warning:",
+	skipped:  "skipped",
+	failed:   "FAILED",
+	internal: "internal error: %v",
 
 	summary:     "Done: converted %s, skipped %s, failed %s, warnings %s",
 	interrupted: "Interrupted: some files were not processed.",
@@ -104,8 +136,9 @@ var es = messages{
 	help: `subflat %s - aplana los subtítulos ASS/SSA de los MKV a SRT que cualquier TV muestra
 
 Convierte cada pista ASS/SSA de cada MKV a SRT, fusionando en un solo subtítulo
-los eventos que coinciden en el tiempo, y remuxea a un MKV nuevo. El original
-nunca se modifica.
+los eventos que coinciden en el tiempo, y remuxea a un MKV nuevo. Con --burn,
+en cambio, dibuja una pista ASS sobre el vídeo tal como la muestra VLC. El
+original nunca se modifica.
 
 USO
   subflat <carpeta | archivo.mkv> [opciones]
@@ -124,6 +157,14 @@ SUBTÍTULOS
   --lines N              alto, en líneas, de los subtítulos con texto de arriba, rellenados con líneas
                          en blanco para que el cartel salga arriba; 0 deja todo abajo (17 por defecto)
 
+QUEMAR
+  --burn                 dibuja los subtítulos ASS sobre el vídeo, con sus posiciones, dibujos
+                         y efectos; lo recodifica a HEVC 10 bit y necesita ffmpeg. La salida
+                         conserva vídeo, audio y capítulos, y no lleva pistas de subtítulos
+  --burn-lang IDIOMA     pista a quemar si hay varias, p. ej. spa o es; sin él, pregunta
+  --encoder NOMBRE       auto, qsv (Intel Quick Sync) o x265 (CPU, mucho más lento) (auto por defecto)
+  --quality N            1-51, menor es mejor y más pesado (18 por defecto)
+
 GENERAL
   --dry-run              muestra pistas, estilos y lo que se escribiría, sin escribir nada
   --lang en|es           idioma de los mensajes (por defecto el del sistema; si no, en)
@@ -135,6 +176,7 @@ EJEMPLOS
   subflat "D:\Anime\Temporada 1" --recursive --exclude-style "(?i)^(signs?|op|ed)"
   subflat ~/Videos/Serie --out /Volumes/USB/Serie --keep-ass
   subflat episodio.mkv --srt-only
+  subflat "D:\Anime\Temporada 1" --burn --burn-lang spa --out "E:\TV\Temporada 1"
 
 Documentación: https://github.com/Mathi031/subflat/blob/main/README.es.md
 `,
@@ -143,12 +185,20 @@ Documentación: https://github.com/Mathi031/subflat/blob/main/README.es.md
 	errMinGap:    "--min-gap no puede ser negativo",
 	errLines:     "--lines no puede ser negativo",
 	errLang:      "--lang tiene que ser en o es, no %q",
+	errEncoder:   "--encoder tiene que ser auto, qsv o x265, no %q",
+	errQuality:   "--quality tiene que estar entre 1 y 51",
+	errNotBurn:   "--%s no se usa con --burn",
+	errBurnOnly:  "--%s solo sirve con --burn",
 	usageHint:    "Ejecuta 'subflat --help' para ver la ayuda.",
 
 	noTools:       "no encuentro mkvmerge y mkvextract (MKVToolNix). Instálalo con:\n  %s\no descárgalo de https://mkvtoolnix.download/",
+	noFFmpeg:      "no encuentro ffmpeg, que --burn necesita. Instálalo con:\n  %s\no descárgalo de https://ffmpeg.org/download.html",
+	noLibass:      "este ffmpeg no tiene el filtro subtitles (se compiló sin libass): instala una versión completa",
+	noEncoder:     "el codificador %s no funciona en este equipo: %s",
 	notFound:      "%s no existe",
 	notTarget:     "%s no es una carpeta ni un archivo .mkv",
 	unknownFormat: "mkvmerge no reconoce el formato",
+	burnWith:      "se quema con %s, calidad %d",
 	dryRun:        "simulación: no se escribe nada",
 	mkvFiles:      "Archivos MKV",
 
@@ -169,10 +219,22 @@ Documentación: https://github.com/Mathi031/subflat/blob/main/README.es.md
 	wouldWrite: "se escribiría %s",
 	extracting: "extrayendo subtítulos",
 	remuxing:   "remuxeando %d%%",
-	warning:    "aviso:",
-	skipped:    "saltado",
-	failed:     "ERROR",
-	internal:   "error interno: %v",
+
+	noVideo:      "sin pista de vídeo",
+	burnTrack:    "se quema la pista %d: %s%s%s",
+	sameAsBefore: "(la misma elección que antes)",
+	noLangMatch:  "ninguna pista ASS en idioma %s",
+	manyASS:      "varias pistas ASS y ninguna terminal para preguntar cuál",
+	useBurnLang:  ": usa --burn-lang",
+	noAnswer:     "no se eligió pista",
+	askTrack:     "Hay varias pistas ASS. ¿Cuál se quema?",
+	askNumber:    "Número: ",
+	burning:      "quemando subtítulos",
+
+	warning:  "aviso:",
+	skipped:  "saltado",
+	failed:   "ERROR",
+	internal: "error interno: %v",
 
 	summary:     "Hecho: convertidos %s, saltados %s, con error %s, avisos %s",
 	interrupted: "Interrumpido: algunos archivos quedaron sin procesar.",

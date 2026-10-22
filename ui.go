@@ -16,11 +16,14 @@ const (
 
 // tty is true when stdout is a terminal: progress is then rewritten in place.
 // color adds ANSI colors on top, unless NO_COLOR or TERM=dumb asks for plain text.
-var tty, color bool
+// stdinTTY is true when stdin is one too: --burn can then ask which track to burn.
+var tty, color, stdinTTY bool
 
 func initUI() {
 	fi, err := os.Stdout.Stat()
 	tty = err == nil && fi.Mode()&os.ModeCharDevice != 0
+	fi, err = os.Stdin.Stat()
+	stdinTTY = err == nil && fi.Mode()&os.ModeCharDevice != 0
 	color = tty && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && enableVT(os.Stdout)
 }
 

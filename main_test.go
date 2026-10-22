@@ -32,6 +32,26 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestParseArgsBurn(t *testing.T) {
+	c, err := parseArgs([]string{"series", "--burn", "--burn-lang", "spa", "--encoder", "x265", "--quality", "20", "--force"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.burn || c.burnLang != "spa" || c.encoder != "x265" || c.quality != 20 || !c.force {
+		t.Errorf("config = %+v", c)
+	}
+	for _, bad := range [][]string{
+		{"a", "--burn", "--srt-only"}, {"a", "--burn", "--keep-ass"}, {"a", "--burn", "--exclude-style", "x"},
+		{"a", "--burn", "--min-gap", "100"}, {"a", "--burn", "--lines", "17"},
+		{"a", "--burn-lang", "spa"}, {"a", "--encoder", "qsv"}, {"a", "--quality", "18"},
+		{"a", "--burn", "--encoder", "nvenc"}, {"a", "--burn", "--quality", "0"}, {"a", "--burn", "--quality", "52"},
+	} {
+		if _, err := parseArgs(bad); err == nil {
+			t.Errorf("parseArgs(%q) should fail", bad)
+		}
+	}
+}
+
 func TestParseArgsSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "ep.mkv")
