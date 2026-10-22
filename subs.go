@@ -14,15 +14,17 @@ type Event struct {
 	Start, End int // ms
 	Style      string
 	Text       string
-	Top        bool // alignment 7-9
+	Top        bool // alignment 7-9, or placed with \pos in the upper half
 	Order      int  // position in the file
 }
 
 // Script is what the merge needs from an ASS/SSA file.
 type Script struct {
-	Events []Event        // Dialogue lines with text, drawings already dropped
-	Styles map[string]int // Dialogue lines per style, before dropping anything
-	Bad    int            // malformed Dialogue lines skipped
+	Events   []Event        // lines with text, drawings and generated karaoke already dropped
+	Styles   map[string]int // Dialogue lines per style, before dropping anything
+	Bad      int            // malformed Dialogue lines skipped
+	Karaoke  int            // generated karaoke lines dropped (one per letter or syllable)
+	Restored int            // original karaoke lines taken back from Comment
 }
 
 // Block is one SRT cue: the union of the events active in [Start, End). The first
@@ -39,24 +41,37 @@ func (b Block) Text() string { return strings.Join(b.Texts, "\n") }
 var (
 	overrideRe = regexp.MustCompile(`\{[^}]*\}`)
 	// "an" goes first so \an8 is not read as \a; \alpha, \pos and \pbo have no digit right after.
-	tagRe        = regexp.MustCompile(`\\(an|a|p)(\d+)`)
+	tagRe = regexp.MustCompile(`\\(an|a|p)(\d+)`)
+	// the y of \pos(x,y) or of the first point of \move(x1,y1,x2,y2...)
+	posRe        = regexp.MustCompile(`\\(?:pos|move)\(\s*[^,()]*,\s*(-?[\d.]+)`)
 	escapes      = strings.NewReplacer(`\N`, "\n", `\n`, "\n", `\h`, " ")
 	eventsFormat = []string{"layer", "start", "end", "style", "name", "marginl", "marginr", "marginv", "effect", "text"}
 )
 
 // ParseASS reads the styles and Dialogue events of an ASS or SSA script.
 // Columns follow each section's Format: line.
+//
+// Karaoke made by a generator (Aegisub's templater marks it with Effect "fx",
+// Kara Effector signs its first tag block) comes as one event per letter or
+// syllable, each placed with \pos: merged, that is one line per letter. Those
+// events are dropped and the Comment lines of the same styles, the originals the
+// generator keeps, are used instead.
 func ParseASS(src string) Script {
 	s := Script{Styles: map[string]int{}}
 	styleAlign := map[string]int{}
 	defaultAlign := 2
+	playResY := 288 // libass default
 	var section string
 	var styleFmt, eventFmt map[string]int
 	type raw struct {
-		ev    Event
-		align int // override from \an or \a, 0 = use the style
+		ev      Event
+		align   int     // override from \an or \a, 0 = use the style
+		y       float64 // from \pos or \move
+		pos     bool
+		comment bool
 	}
 	var raws []raw
+	generated := map[string]bool{} // styles with generated karaoke
 
 	for _, line := range strings.Split(strings.TrimPrefix(src, "\xef\xbb\xbf"), "\n") {
 		line = strings.TrimSpace(line)
@@ -70,6 +85,10 @@ func ParseASS(src string) Script {
 		}
 		rest = strings.TrimSpace(rest)
 		switch {
+		case section == "[script info]" && key == "PlayResY":
+			if v, err := strconv.Atoi(rest); err == nil && v > 0 {
+				playResY = v
+			}
 		case strings.Contains(section, "styles") && key == "Format":
 			styleFmt = columns(rest)
 		case strings.Contains(section, "styles") && key == "Style":
@@ -83,13 +102,16 @@ func ParseASS(src string) Script {
 			}
 		case section == "[events]" && key == "Format":
 			eventFmt = columns(rest)
-		case section == "[events]" && key == "Dialogue":
+		case section == "[events]" && (key == "Dialogue" || key == "Comment"):
+			comment := key == "Comment"
 			if eventFmt == nil {
 				eventFmt = columns(strings.Join(eventsFormat, ","))
 			}
 			f := strings.SplitN(rest, ",", len(eventFmt))
 			if len(f) < len(eventFmt) {
-				s.Bad++
+				if !comment {
+					s.Bad++
+				}
 				continue
 			}
 			get := func(k string) string {
@@ -101,25 +123,44 @@ func ParseASS(src string) Script {
 			start, err1 := parseTime(get("start"))
 			end, err2 := parseTime(get("end"))
 			if err1 != nil || err2 != nil {
-				s.Bad++
+				if !comment {
+					s.Bad++
+				}
 				continue
 			}
 			style := strings.TrimSpace(get("style"))
-			s.Styles[style]++
+			if !comment {
+				s.Styles[style]++
+				if strings.EqualFold(strings.TrimSpace(get("effect")), "fx") || strings.Contains(get("text"), "Kara Effector") {
+					s.Karaoke++
+					generated[style] = true
+					continue
+				}
+			}
 			text, align, drawing := parseText(get("text"))
 			if drawing || text == "" {
 				continue
 			}
-			raws = append(raws, raw{Event{Start: start, End: end, Style: style, Text: text, Order: len(raws)}, align})
+			y, pos := position(get("text"))
+			raws = append(raws, raw{Event{Start: start, End: end, Style: style, Text: text, Order: len(raws)}, align, y, pos, comment})
 		}
 	}
 
 	for _, r := range raws {
+		if r.comment {
+			if !generated[r.ev.Style] {
+				continue
+			}
+			s.Restored++
+		}
 		align := r.align
 		if align == 0 {
 			align = lookupAlign(styleAlign, defaultAlign, r.ev.Style)
 		}
 		r.ev.Top = align >= 7
+		if r.pos { // a placed sign goes on top when it sits in the upper half of the picture
+			r.ev.Top = r.y < float64(playResY)/2
+		}
 		s.Events = append(s.Events, r.ev)
 	}
 	return s
@@ -222,6 +263,17 @@ func parseText(raw string) (text string, align int, drawing bool) {
 		}
 	}
 	return strings.Join(lines, "\n"), align, drawing
+}
+
+// position returns the y of the first \pos or \move, the one libass uses.
+func position(raw string) (float64, bool) {
+	for _, block := range overrideRe.FindAllString(raw, -1) {
+		if m := posRe.FindStringSubmatch(block); m != nil {
+			y, err := strconv.ParseFloat(m[1], 64)
+			return y, err == nil
+		}
+	}
+	return 0, false
 }
 
 // parseTime reads H:MM:SS.cc into ms, without floats.

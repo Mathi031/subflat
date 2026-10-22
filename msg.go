@@ -14,7 +14,7 @@ type messages struct {
 
 	// per file
 	track, toSRT, sameAsSrc, noASS, exists, existsDry, events, styles, excluded,
-	badLines, tallCue, emptyTrack, noDialogue, wouldWrite, extracting, remuxing,
+	karaoke, badLines, tallCue, emptyTrack, noDialogue, wouldWrite, extracting, remuxing,
 	warning, skipped, failed, internal string
 
 	// end of the batch
@@ -83,6 +83,7 @@ Docs: https://github.com/Mathi031/subflat
 	events:     "track %d: %d events -> %d cues",
 	styles:     "styles: %s",
 	excluded:   "(excluded)",
+	karaoke:    "track %d: %d generated karaoke lines dropped, %d original lines recovered",
 	badLines:   "track %d: %d malformed Dialogue lines ignored",
 	tallCue:    "%s: cue of %d lines",
 	emptyTrack: "track %d has no dialogue after the filters: keeping the ASS",
@@ -160,6 +161,7 @@ Documentación: https://github.com/Mathi031/subflat/blob/main/README.es.md
 	events:     "pista %d: %d eventos -> %d subtítulos",
 	styles:     "estilos: %s",
 	excluded:   "(excluido)",
+	karaoke:    "pista %d: %d líneas de karaoke generado descartadas, %d originales recuperadas",
 	badLines:   "pista %d: %d líneas Dialogue mal formadas ignoradas",
 	tallCue:    "%s: subtítulo de %d líneas",
 	emptyTrack: "la pista %d queda sin diálogos tras los filtros: se conserva la ASS",

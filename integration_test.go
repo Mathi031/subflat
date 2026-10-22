@@ -21,20 +21,20 @@ var sampleSRT = strings.ReplaceAll(`1
 2
 00:00:02,000 --> 00:00:04,000
 En el corral, creo.
+Granja Los Álamos
 ·
 ·
 ·
 ¿Dónde está el ñandú?
-Granja Los Álamos
 
 3
 00:00:04,000 --> 00:00:05,000
 En el corral, creo.
-·
-·
-·
-·
 Granja Los Álamos
+·
+·
+·
+·
 
 4
 00:00:05,000 --> 00:00:05,960

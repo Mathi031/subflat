@@ -279,6 +279,52 @@ func TestMergeTop(t *testing.T) {
 	}
 }
 
+func TestKaraokeFX(t *testing.T) {
+	s := ParseASS(script(
+		"Dialogue: 0,0:00:00.00,0:00:02.00,Top,,0,0,0,fx,{\\an5\\pos(58,46)}I",
+		"Dialogue: 0,0:00:00.00,0:00:02.00,Top,,0,0,0,FX,{\\an5\\pos(76,46)}f",
+		dlg("0:00:00.00", "0:00:02.00", "Signs", `{Kara Effector 3.6 legacy: Template Leading Char \an5\pos(447,1009)}P`),
+		"Comment: 0,0:00:00.00,0:00:02.00,Top,,0,0,0,karaoke,{\\k20}If {\\k30}there",
+		"Comment: 0,0:00:00.00,0:00:02.00,Signs,,0,0,0,Ending,Pero",
+		"Comment: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,nota del traductor",
+		dlg("0:00:00.00", "0:00:02.00", "Default", "diálogo"),
+	))
+	if s.Karaoke != 3 || s.Restored != 2 || s.Bad != 0 {
+		t.Errorf("karaoke = %d, restored = %d, bad = %d, want 3, 2, 0", s.Karaoke, s.Restored, s.Bad)
+	}
+	if s.Styles["Top"] != 2 || s.Styles["Signs"] != 1 {
+		t.Errorf("styles = %v, the generated lines still count", s.Styles)
+	}
+	got := dump(Merge(s.Events, 0))
+	if want := "00:00:00,000-00:00:02,000 If there|Pero|diálogo\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestPosTop(t *testing.T) {
+	tops := func(src string) []bool {
+		var b []bool
+		for _, e := range ParseASS(src).Events {
+			b = append(b, e.Top)
+		}
+		return b
+	}
+	evs := []string{
+		dlg("0:00:00.00", "0:00:01.00", "Default", `{\pos(960,300)}arriba`),
+		dlg("0:00:00.00", "0:00:01.00", "Top", `{\pos(960,900)}abajo aunque el estilo sea 8`),
+		dlg("0:00:00.00", "0:00:01.00", "Default", `{\fad(0,200)\move(100,200,100,1000)}empieza arriba`),
+		dlg("0:00:00.00", "0:00:01.00", "Default", `{\an8}sin posición`),
+		dlg("0:00:00.00", "0:00:01.00", "Default", `\pos(1,1) fuera de las llaves`),
+	}
+	if got, want := tops(strings.Replace(script(evs...), "[V4+", "PlayResY: 1080\n\n[V4+", 1)), []bool{true, false, true, true, false}; !slices.Equal(got, want) {
+		t.Errorf("PlayResY 1080: tops = %v, want %v", got, want)
+	}
+	// Without PlayResY the canvas is 288 tall, as in libass: y 200 and 300 are below the middle.
+	if got, want := tops(script(evs...)), []bool{false, false, false, true, false}; !slices.Equal(got, want) {
+		t.Errorf("no PlayResY: tops = %v, want %v", got, want)
+	}
+}
+
 func TestFormatSRT(t *testing.T) {
 	got := FormatSRT([]Block{
 		{3723004, 3724500, []string{"Préstamo Mágico\nHabilidad", "hay una mazmorra"}, 1},

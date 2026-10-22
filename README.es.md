@@ -178,13 +178,20 @@ subflat episodio.mkv
 ## Cómo fusiona
 
 1. Se ignoran los `Comment`, los eventos con dibujo vectorial (`\p1` o más) y los
-   estilos excluidos.
+   estilos excluidos. También el karaoke hecho con un generador (el templater de
+   Aegisub lo marca con el efecto `fx`, Kara Effector lo firma): llega como un
+   evento por letra o sílaba, y cada uno sería una línea. En su lugar van los
+   `Comment` de esos mismos estilos, las líneas originales que el generador
+   conserva; si el archivo no las conservó, esa canción queda sin letra. El
+   informe dice cuántas líneas se descartaron y cuántas se recuperaron.
 2. Se limpia el texto: fuera los bloques `{...}`, `\N` y `\n` pasan a salto de
    línea, `\h` a espacio, y se descartan las líneas vacías.
 3. Se toman todos los tiempos de inicio y fin. Cada tramo entre dos tiempos con
    algún evento activo es un subtítulo con todos esos eventos: primero los que
-   iban arriba (alineación 7 a 9, por `\an`, por `\a` de SSA o por el estilo),
-   luego por hora de inicio y por orden en el archivo. Los textos repetidos
+   iban arriba (alineación 7 a 9, por `\an`, por `\a` de SSA o por el estilo; un
+   evento colocado con `\pos` o `\move` va arriba si ese punto está en la mitad
+   superior de la imagen, según `PlayResY`), luego por hora de inicio y por orden
+   en el archivo. Los textos repetidos
    (capas de un mismo efecto) aparecen una sola vez.
 4. Los tramos seguidos con el mismo texto y sin hueco se unen.
 5. Un tramo de menos de `--min-gap` ms se elimina si todos sus textos ya se ven en
@@ -203,7 +210,7 @@ subflat episodio.mkv
 
 Un fragmento de `testdata/sample.ass`: Luis habla arriba (estilo `Arriba`,
 alineación 8) mientras Ana sigue hablando abajo, y hay un cartel hecho con dos
-capas del mismo texto:
+capas del mismo texto, colocado en la mitad superior de una imagen de 1080 líneas:
 
 ```
 Dialogue: 0,0:00:01.00,0:00:04.00,Default,Ana,0,0,0,,¿Dónde está el ñandú?
@@ -212,9 +219,9 @@ Dialogue: 1,0:00:02.00,0:00:05.00,Cartel,,0,0,0,,{\pos(960,300)\blur2}Granja Los
 Dialogue: 0,0:00:02.00,0:00:05.00,Cartel,,0,0,0,,{\pos(960,300)\bord0}Granja Los Álamos
 ```
 
-Sale una SRT sin solapes, con Luis primero mientras habla (con `--lines 0`, para
-que se lea; con el valor por defecto, entre «En el corral, creo.» y el resto van
-las líneas en blanco que completan las 17):
+Sale una SRT sin solapes, con Luis y el cartel primero mientras están en pantalla
+(con `--lines 0`, para que se lea; con el valor por defecto, entre «Granja Los
+Álamos» y el resto van las líneas en blanco que completan las 17):
 
 ```
 1
@@ -224,8 +231,8 @@ las líneas en blanco que completan las 17):
 2
 00:00:02,000 --> 00:00:04,000
 En el corral, creo.
-¿Dónde está el ñandú?
 Granja Los Álamos
+¿Dónde está el ñandú?
 
 3
 00:00:04,000 --> 00:00:05,000
@@ -263,9 +270,12 @@ request; empujar un tag `v*` compila los binarios y publica un release.
 ## Limitaciones
 
 - La SRT es texto plano: se pierden colores, fuentes, cursivas, cajas, efectos y
-  posiciones exactas. Un cartel sube por el relleno de `--lines`, no por su
-  posición real, y siempre centrado. Si los carteles molestan, se quitan con
+  posiciones exactas. Un cartel va arriba o abajo según la mitad de la imagen en
+  que está colocado, sube por el relleno de `--lines`, no hasta su posición
+  real, y siempre centrado. Si los carteles molestan, se quitan con
   `--exclude-style`.
+- El karaoke generado cuyas líneas originales no están en el archivo queda sin
+  letra: rehacerla desde las letras obligaría a adivinar los espacios.
 - No se usa `{\an8}` ni otra marca de posición: no son parte del estándar SRT y
   el reproductor de Samsung las muestra como texto, tapando además el diálogo
   que coincide con ellas.

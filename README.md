@@ -177,13 +177,20 @@ subflat episode.mkv
 ## How it merges
 
 1. `Comment` lines, events with vector drawings (`\p1` or higher) and excluded
-   styles are ignored.
+   styles are ignored. So is karaoke made by a generator (Aegisub's templater
+   marks it with the `fx` effect, Kara Effector signs it): it comes as one event
+   per letter or syllable, and each would be a line of its own. In its place go
+   the `Comment` lines of the same styles, the original lines the generator
+   keeps; if the file did not keep them, that song shows no lyrics. The report
+   says how many lines were dropped and how many recovered.
 2. The text is cleaned: `{...}` blocks are removed, `\N` and `\n` become line
    breaks, `\h` a space, and empty lines are dropped.
 3. Every start and end time is collected. Each span between two consecutive
    times with some active event is one cue holding all of them: first the ones
    that were at the top (alignment 7 to 9, by `\an`, by SSA `\a` or by the
-   style), then by start time and file order. Repeated texts (layers of one
+   style; an event placed with `\pos` or `\move` is at the top when that point
+   is in the upper half of the picture, by `PlayResY`), then by start time and
+   file order. Repeated texts (layers of one
    effect) appear once.
 4. Consecutive spans with the same text and no gap are joined.
 5. A span shorter than `--min-gap` ms is dropped when every one of its texts is
@@ -200,7 +207,7 @@ subflat episode.mkv
 
 A fragment of `testdata/sample.ass`: Luis speaks at the top (style `Arriba`,
 alignment 8) while Ana keeps talking at the bottom, and there is a sign made of
-two layers of the same text:
+two layers of the same text, placed in the upper half of a 1080-line picture:
 
 ```
 Dialogue: 0,0:00:01.00,0:00:04.00,Default,Ana,0,0,0,,¿Dónde está el ñandú?
@@ -209,9 +216,9 @@ Dialogue: 1,0:00:02.00,0:00:05.00,Cartel,,0,0,0,,{\pos(960,300)\blur2}Granja Los
 Dialogue: 0,0:00:02.00,0:00:05.00,Cartel,,0,0,0,,{\pos(960,300)\bord0}Granja Los Álamos
 ```
 
-Out comes an SRT without overlaps, with Luis first while he speaks (shown with
-`--lines 0` so it stays readable; with the default, the blank lines that complete
-the 17 go between "En el corral, creo." and the rest):
+Out comes an SRT without overlaps, with Luis and the sign first while they are
+on screen (shown with `--lines 0` so it stays readable; with the default, the
+blank lines that complete the 17 go between "Granja Los Álamos" and the rest):
 
 ```
 1
@@ -221,8 +228,8 @@ the 17 go between "En el corral, creo." and the rest):
 2
 00:00:02,000 --> 00:00:04,000
 En el corral, creo.
-¿Dónde está el ñandú?
 Granja Los Álamos
+¿Dónde está el ñandú?
 
 3
 00:00:04,000 --> 00:00:05,000
@@ -260,9 +267,12 @@ request; pushing a `v*` tag builds the binaries and publishes a release.
 ## Limitations
 
 - SRT is plain text: colors, fonts, italics, boxes, effects and exact positions
-  are lost. A sign rises through the `--lines` padding, not through its real
-  position, and always centered. If signs get in the way, drop them with
+  are lost. A sign goes to the top or the bottom by the half of the picture it
+  is placed in, rises through the `--lines` padding, not to its real position,
+  and always centered. If signs get in the way, drop them with
   `--exclude-style`.
+- Generated karaoke whose original lines are not in the file shows no lyrics:
+  rebuilding them from the letters would mean guessing the spaces.
 - No `{\an8}` or other position tag is used: they are not part of the SRT
   standard and the Samsung player shows them as text, hiding the dialogue that
   coincides with them on top of that.

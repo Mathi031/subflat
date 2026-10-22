@@ -419,6 +419,9 @@ func process(ctx context.Context, t tools, c config, src string) (r result) {
 		evs := WithoutStyles(s.Events, c.exclude)
 		blocks := Merge(evs, c.minGap)
 		r.logf(m.events, tr.ID, len(evs), len(blocks))
+		if s.Karaoke > 0 {
+			r.logf(m.karaoke, tr.ID, s.Karaoke, s.Restored)
+		}
 		r.logf("  "+m.styles, styleSummary(s.Styles, c.exclude))
 		if s.Bad > 0 {
 			r.warn(fmt.Sprintf(m.badLines, tr.ID, s.Bad))
